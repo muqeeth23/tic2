@@ -8,50 +8,62 @@ app.use(express.static('public'));
 let rooms = {};
 
 io.on('connection', socket => {
-  socket.on('joinRoom', roomId => {
+  socket.on('joinRoom', ({ roomId, username }) => {
     socket.join(roomId);
     if (!rooms[roomId]) {
       rooms[roomId] = {
         board: Array(9).fill(null),
+        moveHistory: [],
         players: {},
         turn: 'X'
       };
     }
 
     const room = rooms[roomId];
-    const playerSymbol = Object.keys(room.players).length === 0 ? 'X' : 'O';
+    const playerSymbol = Object.values(room.players).some(p => p.symbol === 'X') ? 'O' : 'X';
+    room.players[socket.id] = { symbol: playerSymbol, name: username };
 
-    room.players[socket.id] = playerSymbol;
-    socket.emit('symbol', playerSymbol);
+    socket.emit('symbol', { symbol: playerSymbol, name: username });
 
     if (Object.keys(room.players).length === 2) {
-      io.to(roomId).emit('start', room.turn);
+      const players = Object.values(room.players).map(p => p.name);
+      io.to(roomId).emit('start', { turn: room.turn, players });
     }
 
     socket.on('makeMove', index => {
-      const r = rooms[roomId];
-      if (r && r.turn === r.players[socket.id] && !r.board[index]) {
-        r.board[index] = r.turn;
-        io.to(roomId).emit('moveMade', { index, symbol: r.turn });
+      const player = room.players[socket.id];
+      if (player && room.turn === player.symbol && !room.board[index]) {
+        room.board[index] = player.symbol;
+        room.moveHistory.push({ index, symbol: player.symbol });
+        io.to(roomId).emit('moveMade', { index, symbol: player.symbol });
 
-        if (checkWinner(r.board, r.turn)) {
-          io.to(roomId).emit('gameOver', `${r.turn} wins!`);
+        if (checkWinner(room.board, player.symbol)) {
+          io.to(roomId).emit('gameOver', `${player.name} (${player.symbol}) wins!`);
           delete rooms[roomId];
-        } else if (r.board.every(cell => cell)) {
-          io.to(roomId).emit('gameOver', 'Draw!');
-          delete rooms[roomId];
-        } else {
-          r.turn = r.turn === 'X' ? 'O' : 'X';
-          io.to(roomId).emit('turn', r.turn);
+        } 
+        else if (room.board.every(cell => cell !== null)) {
+          // 💡 Draw: remove oldest move and switch turn
+          const oldest = room.moveHistory.shift();
+          room.board[oldest.index] = null;
+          io.to(roomId).emit('rollbackMove', oldest.index);
+          io.to(roomId).emit('draw-continue', `Board was full. Oldest move (${oldest.symbol}) removed at position ${oldest.index}.`);
+
+          // ✅ Switch turn to next player after rollback
+          room.turn = room.turn === 'X' ? 'O' : 'X';
+          io.to(roomId).emit('turn', room.turn);
+        } 
+        else {
+          // Switch turns normally
+          room.turn = room.turn === 'X' ? 'O' : 'X';
+          io.to(roomId).emit('turn', room.turn);
         }
       }
     });
 
     socket.on('disconnect', () => {
-      const r = rooms[roomId];
-      if (r) {
-        delete r.players[socket.id];
-        if (Object.keys(r.players).length === 0) {
+      if (rooms[roomId]) {
+        delete rooms[roomId].players[socket.id];
+        if (Object.keys(rooms[roomId].players).length === 0) {
           delete rooms[roomId];
         } else {
           io.to(roomId).emit('gameOver', 'Opponent disconnected.');

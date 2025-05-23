@@ -19,4 +19,7 @@ body {
   align-items: center;
   cursor: pointer;
 }
+input {
+  margin: 5px;
+}
 
